@@ -1,5 +1,10 @@
 import ccxt
 import pandas as pd
+from config.settings import (
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID
+)
+from telegram.telegram_alerts import TelegramAlerts
 
 
 class ApexScanner:
@@ -10,41 +15,43 @@ class ApexScanner:
             "enableRateLimit": True
         })
 
-    def get_top_pairs(self, limit=30):
+        self.telegram = TelegramAlerts(
+            TELEGRAM_BOT_TOKEN,
+            TELEGRAM_CHAT_ID
+        )
+
+    def get_top_pairs(self, limit=50):
 
         tickers = self.exchange.fetch_tickers()
 
-        data = []
+        rows = []
 
         for symbol, ticker in tickers.items():
 
             if not symbol.endswith("/USDT:USDT"):
                 continue
 
-            volume = ticker.get(
-                "quoteVolume",
-                0
-            )
-
-            change = ticker.get(
-                "percentage",
-                0
-            )
-
-            data.append({
+            rows.append({
                 "symbol": symbol,
-                "volume": volume,
-                "change": change
+                "volume": ticker.get(
+                    "quoteVolume",
+                    0
+                ),
+                "change": ticker.get(
+                    "percentage",
+                    0
+                )
             })
 
-        df = pd.DataFrame(data)
+        df = pd.DataFrame(rows)
 
-        df = df.sort_values(
-            by="volume",
-            ascending=False
+        return (
+            df.sort_values(
+                by="volume",
+                ascending=False
+            )
+            .head(limit)
         )
-
-        return df.head(limit)
 
     def calculate_rvol(
         self,
@@ -71,23 +78,26 @@ class ApexScanner:
             ]
         )
 
-        current_volume = df["volume"].iloc[-1]
+        current_volume = (
+            df["volume"].iloc[-1]
+        )
 
-        avg_volume = (
+        average_volume = (
             df["volume"]
             .iloc[:-1]
             .mean()
         )
 
-        if avg_volume == 0:
+        if average_volume == 0:
             return 0
 
         return round(
-            current_volume / avg_volume,
+            current_volume
+            / average_volume,
             2
         )
 
-    def ema_filter(
+    def trend_filter(
         self,
         symbol,
         timeframe="5m"
@@ -129,7 +139,7 @@ class ApexScanner:
             df["ema50"].iloc[-1]
         )
 
-    def score(
+    def calculate_score(
         self,
         rvol,
         change,
@@ -150,18 +160,39 @@ class ApexScanner:
             100 if trend else 0
         )
 
-        final_score = (
+        score = (
             rvol_score * 0.5
-            +
-            momentum_score * 0.3
-            +
-            trend_score * 0.2
+            + momentum_score * 0.3
+            + trend_score * 0.2
         )
 
         return round(
-            final_score,
+            score,
             2
         )
+
+    def send_alerts(
+        self,
+        ranked
+    ):
+
+        for _, row in ranked.head(5).iterrows():
+
+            if row["score"] < 70:
+                continue
+
+            message = (
+                f"🚀 APEX SIGNAL\n\n"
+                f"Coin: {row['symbol']}\n"
+                f"Score: {row['score']}\n"
+                f"RVOL: {row['rvol']}\n"
+                f"Change: {round(row['change'],2)}%\n"
+                f"Trend: {'Bullish' if row['trend'] else 'Bearish'}"
+            )
+
+            self.telegram.send(
+                message
+            )
 
     def run(self):
 
@@ -175,18 +206,24 @@ class ApexScanner:
 
             try:
 
-                rvol = self.calculate_rvol(
-                    symbol
+                rvol = (
+                    self.calculate_rvol(
+                        symbol
+                    )
                 )
 
-                trend = self.ema_filter(
-                    symbol
+                trend = (
+                    self.trend_filter(
+                        symbol
+                    )
                 )
 
-                score = self.score(
-                    rvol,
-                    row["change"],
-                    trend
+                score = (
+                    self.calculate_score(
+                        rvol,
+                        row["change"],
+                        trend
+                    )
                 )
 
                 results.append({
@@ -200,17 +237,25 @@ class ApexScanner:
             except Exception:
                 continue
 
-        ranked = pd.DataFrame(results)
+        ranked = pd.DataFrame(
+            results
+        )
 
         ranked = ranked.sort_values(
             by="score",
             ascending=False
         )
 
-        print("\nAPEX TOP OPPORTUNITIES\n")
+        print(
+            "\nAPEX TOP OPPORTUNITIES\n"
+        )
 
         print(
             ranked.head(10)
+        )
+
+        self.send_alerts(
+            ranked
         )
 
 
