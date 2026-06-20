@@ -20,7 +20,7 @@ class ApexScanner:
             TELEGRAM_CHAT_ID
         )
 
-    def get_top_pairs(self, limit=50):
+    def get_pairs(self, limit=50):
 
         tickers = self.exchange.fetch_tickers()
 
@@ -53,17 +53,12 @@ class ApexScanner:
             .head(limit)
         )
 
-    def calculate_rvol(
-        self,
-        symbol,
-        timeframe="5m",
-        limit=50
-    ):
+    def get_data(self, symbol):
 
         candles = self.exchange.fetch_ohlcv(
             symbol,
-            timeframe=timeframe,
-            limit=limit
+            timeframe="5m",
+            limit=100
         )
 
         df = pd.DataFrame(
@@ -78,48 +73,27 @@ class ApexScanner:
             ]
         )
 
-        current_volume = (
-            df["volume"].iloc[-1]
-        )
+        return df
 
-        average_volume = (
+    def calculate_rvol(self, df):
+
+        current_volume = df["volume"].iloc[-1]
+
+        avg_volume = (
             df["volume"]
-            .iloc[:-1]
+            .iloc[-21:-1]
             .mean()
         )
 
-        if average_volume == 0:
+        if avg_volume == 0:
             return 0
 
         return round(
-            current_volume
-            / average_volume,
+            current_volume / avg_volume,
             2
         )
 
-    def trend_filter(
-        self,
-        symbol,
-        timeframe="5m"
-    ):
-
-        candles = self.exchange.fetch_ohlcv(
-            symbol,
-            timeframe=timeframe,
-            limit=60
-        )
-
-        df = pd.DataFrame(
-            candles,
-            columns=[
-                "time",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume"
-            ]
-        )
+    def trend_filter(self, df):
 
         df["ema20"] = (
             df["close"]
@@ -139,64 +113,83 @@ class ApexScanner:
             df["ema50"].iloc[-1]
         )
 
-    def calculate_score(
-        self,
-        rvol,
-        change,
-        trend
-    ):
+    def breakout(self, df):
 
-        rvol_score = min(
+        recent_high = (
+            df["high"]
+            .iloc[-21:-1]
+            .max()
+        )
+
+        current_close = (
+            df["close"]
+            .iloc[-1]
+        )
+
+        return current_close > recent_high
+
+    def trade_levels(self, df):
+
+        entry = df["close"].iloc[-1]
+
+        atr = (
+            df["high"] - df["low"]
+        ).rolling(14).mean().iloc[-1]
+
+        sl = entry - atr
+        tp1 = entry + atr
+        tp2 = entry + (atr * 2)
+
+        return (
+            round(entry, 6),
+            round(sl, 6),
+            round(tp1, 6),
+            round(tp2, 6)
+        )
+
+    def score(self,
+              rvol,
+              trend,
+              breakout):
+
+        score = 0
+
+        score += min(
             rvol * 20,
-            100
+            60
         )
 
-        momentum_score = min(
-            abs(change) * 5,
-            100
-        )
+        if trend:
+            score += 20
 
-        trend_score = (
-            100 if trend else 0
-        )
+        if breakout:
+            score += 20
 
-        score = (
-            rvol_score * 0.5
-            + momentum_score * 0.3
-            + trend_score * 0.2
-        )
+        return round(score, 2)
 
-        return round(
-            score,
-            2
-        )
+    def alert(self, row):
 
-    def send_alerts(
-        self,
-        ranked
-    ):
+        message = f"""
+🚀 APEX SIGNAL
 
-        for _, row in ranked.head(5).iterrows():
+Coin: {row['symbol']}
+Score: {row['score']}
+RVOL: {row['rvol']}
 
-            if row["score"] < 70:
-                continue
+Trend: Bullish
+Breakout: YES
 
-            message = (
-                f"🚀 APEX SIGNAL\n\n"
-                f"Coin: {row['symbol']}\n"
-                f"Score: {row['score']}\n"
-                f"RVOL: {row['rvol']}\n"
-                f"Change: {round(row['change'],2)}%\n"
-                f"Trend: {'Bullish' if row['trend'] else 'Bearish'}"
-            )
+Entry: {row['entry']}
+SL: {row['sl']}
+TP1: {row['tp1']}
+TP2: {row['tp2']}
+"""
 
-            self.telegram.send(
-                message
-            )
+        self.telegram.send(message)
 
     def run(self):
 
-        pairs = self.get_top_pairs()
+        pairs = self.get_pairs()
 
         results = []
 
@@ -206,40 +199,38 @@ class ApexScanner:
 
             try:
 
-                rvol = (
-                    self.calculate_rvol(
-                        symbol
-                    )
+                df = self.get_data(symbol)
+
+                rvol = self.calculate_rvol(df)
+
+                trend = self.trend_filter(df)
+
+                breakout = self.breakout(df)
+
+                entry, sl, tp1, tp2 = (
+                    self.trade_levels(df)
                 )
 
-                trend = (
-                    self.trend_filter(
-                        symbol
-                    )
-                )
-
-                score = (
-                    self.calculate_score(
-                        rvol,
-                        row["change"],
-                        trend
-                    )
+                score = self.score(
+                    rvol,
+                    trend,
+                    breakout
                 )
 
                 results.append({
                     "symbol": symbol,
                     "rvol": rvol,
-                    "change": row["change"],
-                    "trend": trend,
-                    "score": score
+                    "score": score,
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2
                 })
 
             except Exception:
-                continue
+                pass
 
-        ranked = pd.DataFrame(
-            results
-        )
+        ranked = pd.DataFrame(results)
 
         ranked = ranked.sort_values(
             by="score",
@@ -247,16 +238,14 @@ class ApexScanner:
         )
 
         print(
-            "\nAPEX TOP OPPORTUNITIES\n"
-        )
-
-        print(
             ranked.head(10)
         )
 
-        self.send_alerts(
-            ranked
-        )
+        for _, row in ranked.head(5).iterrows():
+
+            if row["score"] >= 70:
+
+                self.alert(row)
 
 
 if __name__ == "__main__":
