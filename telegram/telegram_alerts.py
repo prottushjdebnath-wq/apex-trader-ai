@@ -9,8 +9,12 @@ class TelegramAlerts:
 
     def send(self, message):
 
-        if not self.token or not self.chat_id:
-            print("Telegram not configured")
+        if not self.token:
+            print("No Telegram token")
+            return
+
+        if not self.chat_id:
+            print("No Telegram chat id")
             return
 
         url = (
@@ -20,7 +24,14 @@ class TelegramAlerts:
 
         payload = {
             "chat_id": self.chat_id,
-            "text": message
+            "text": message,
+            "parse_mode": "HTML"
         }
 
-        requests.post(url, json=payload, timeout=15)
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=15
+        )
+
+        return response.json()
