@@ -1,25 +1,20 @@
-from scanner.oi_rvol_scanner import OIRVOLScanner
-from scanner.signal_ranker import SignalRanker
+import time
+from scanner.apex_scanner import ApexScanner
 
+while True:
 
-def main():
+    print("\n=== NEW SCAN ===")
 
-    scanner = OIRVOLScanner()
+    try:
 
-    df = scanner.scan()
+        scanner = ApexScanner()
 
-    ranker = SignalRanker()
+        scanner.run()
 
-    ranked = ranker.score(df)
+    except Exception as e:
 
-    print("\nTOP RANKED COINS\n")
+        print(f"ERROR: {e}")
 
-    print(
-        ranked[
-            ["symbol", "volume", "change", "score"]
-        ].head(10)
-    )
+    print("Sleeping 30 seconds...")
 
-
-if __name__ == "__main__":
-    main()
+    time.sleep(30)
