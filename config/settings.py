@@ -56,6 +56,8 @@ PAPER_START_BALANCE = float(
 # DATABASE
 # ==========================================
 
+FUTURES_OI_CONFIRM_THRESHOLD_PCT = float(os.getenv("FUTURES_OI_CONFIRM_THRESHOLD_PCT", "3.0"))
+
 DATABASE_PATH = str(
     BASE_DIR / "database" / "apex_trader.db"
 )

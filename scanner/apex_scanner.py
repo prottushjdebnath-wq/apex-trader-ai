@@ -5,6 +5,12 @@ from config.settings import (
     TELEGRAM_CHAT_ID
 )
 from telegram.telegram_alerts import TelegramAlerts
+from scanner.utils import check_alignment
+from scanner.oi_engine import OIEngine
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+
 
 
 class ApexScanner:
@@ -19,6 +25,7 @@ class ApexScanner:
             TELEGRAM_BOT_TOKEN,
             TELEGRAM_CHAT_ID
         )
+        self.oi_engine = OIEngine()
 
     def get_pairs(self, limit=50):
 
@@ -128,23 +135,48 @@ class ApexScanner:
 
         return current_close > recent_high
 
-    def trade_levels(self, df):
-
+    def trade_levels(self, df, direction):
         entry = df["close"].iloc[-1]
 
         atr = (
             df["high"] - df["low"]
         ).rolling(14).mean().iloc[-1]
 
-        sl = entry - atr
-        tp1 = entry + atr
-        tp2 = entry + (atr * 2)
+        recent_high = df["high"].iloc[-21:-1].max()
+        recent_low = df["low"].iloc[-21:-1].min()
+
+        if direction.upper() == "LONG":
+            sl = recent_low - atr
+            tp1_candidate = recent_high
+
+            # ATR fallback if next resistance structure is too close
+            if tp1_candidate <= entry:
+                tp1 = entry + (2 * atr)
+            else:
+                tp1 = tp1_candidate
+        else: # SHORT
+            sl = recent_high + atr
+            tp1_candidate = recent_low
+
+            # ATR fallback if next support structure is too close
+            if tp1_candidate >= entry:
+                tp1 = entry - (2 * atr)
+            else:
+                tp1 = tp1_candidate
+
+        tp2 = entry + (2 * (tp1 - entry)) if direction.upper() == "LONG" else entry - (2 * (entry - tp1))
+
+        risk = abs(entry - sl)
+        reward = abs(tp1 - entry)
+
+        risk_reward_ratio = reward / risk if risk > 0 else 0
 
         return (
             round(entry, 6),
             round(sl, 6),
             round(tp1, 6),
-            round(tp2, 6)
+            round(tp2, 6),
+            round(risk_reward_ratio, 2)
         )
 
     def score(self,
@@ -207,15 +239,43 @@ TP2: {row['tp2']}
 
                 breakout = self.breakout(df)
 
-                entry, sl, tp1, tp2 = (
-                    self.trade_levels(df)
+# Temporary diagnostic logging block
+                direction = "LONG" if breakout else "SHORT"
+                mtf_trend = "BULLISH" if trend else "BEARISH" # Simulated based on existing simple trend boolean
+                btc_regime = "BULLISH" # Placeholder
+
+                mtf_aligned = check_alignment(direction, mtf_trend)
+                btc_aligned = check_alignment(direction, btc_regime)
+
+                oi_info = self.oi_engine.check_oi_confirmation(symbol)
+                funding_rate = 0.01 # Placeholder
+                squeeze_potential = 0.5 # Placeholder
+
+                entry, sl, tp1, tp2, rr = (
+                    self.trade_levels(df, direction)
                 )
+
+                logging.info(
+                    f"FUTURES SETUP DIAGNOSTIC - "
+                    f"symbol: {symbol}, direction: {direction}, mtf_trend: {mtf_trend}, "
+                    f"btc_regime: {btc_regime}, mtf_aligned: {mtf_aligned}, btc_aligned: {btc_aligned}, "
+                    f"oi_current: {oi_info['oi_current']}, oi_previous: {oi_info['oi_previous']}, "
+                    f"oi_change_pct: {oi_info['oi_change_pct']}, oi_confirmed: {oi_info['oi_confirmed']}, "
+                    f"funding_rate: {funding_rate}, squeeze_potential: {squeeze_potential}, rr: {rr}"
+                )
+
+                if rr < 1.5:
+                    continue # Reject setups below 1.5R
 
                 score = self.score(
                     rvol,
                     trend,
                     breakout
                 )
+
+                if mtf_aligned: score += 10
+                if btc_aligned: score += 10
+                if oi_info['oi_confirmed']: score += 10
 
                 results.append({
                     "symbol": symbol,
@@ -224,7 +284,8 @@ TP2: {row['tp2']}
                     "entry": entry,
                     "sl": sl,
                     "tp1": tp1,
-                    "tp2": tp2
+                    "tp2": tp2,
+                    "rr": rr
                 })
 
             except Exception:
